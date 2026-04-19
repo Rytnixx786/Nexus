@@ -5,6 +5,13 @@ from datetime import datetime
 from sqlalchemy import Float, JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+try:
+    from pgvector.sqlalchemy import Vector
+
+    _EMBEDDING_COLUMN_TYPE = Vector(384)
+except Exception:  # pragma: no cover
+    _EMBEDDING_COLUMN_TYPE = JSON
+
 
 class Base(DeclarativeBase):
     pass
@@ -97,3 +104,16 @@ class IdempotencyRecord(Base):
     response_json: Mapped[dict] = mapped_column(JSON, default=dict)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class SemanticCache(Base):
+    __tablename__ = "semantic_cache"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    objective_hash: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    # Uses pgvector when available, otherwise JSON payload fallback.
+    objective_embedding: Mapped[dict | list[float] | None] = mapped_column(_EMBEDDING_COLUMN_TYPE, nullable=True)
+    result_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    full_result_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)

@@ -4,13 +4,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
 from app.core.cost import estimate_cost
-from app.db.tables import Base, IdempotencyRecord, QuotaWindow, RunCheckpoint, RunEvent, RunRecord, TokenUsageLedger
+from app.db.tables import Base, IdempotencyRecord, QuotaWindow, RunCheckpoint, RunEvent, RunRecord, SemanticCache, TokenUsageLedger
 
 logger = get_logger(__name__)
 
@@ -532,3 +532,68 @@ def persist_step(
     session.add(event)
     session.add(checkpoint)
     session.commit()
+
+
+def get_exact_semantic_cache_record(
+    session: Session,
+    objective_hash: str,
+) -> SemanticCache | None:
+    now = datetime.now(timezone.utc)
+    stmt = (
+        select(SemanticCache)
+        .where(SemanticCache.objective_hash == objective_hash)
+        .where(SemanticCache.expires_at >= now)
+        .order_by(SemanticCache.created_at.desc())
+        .limit(1)
+    )
+    return session.scalar(stmt)
+
+
+def list_active_semantic_cache_records(session: Session) -> list[SemanticCache]:
+    now = datetime.now(timezone.utc)
+    stmt = (
+        select(SemanticCache)
+        .where(SemanticCache.expires_at >= now)
+        .order_by(SemanticCache.created_at.desc())
+    )
+    return list(session.scalars(stmt).all())
+
+
+def upsert_semantic_cache_record(
+    session: Session,
+    objective_hash: str,
+    objective_embedding: dict[str, Any] | list[float] | None,
+    result_summary: str,
+    full_result_json: dict[str, Any],
+    ttl_days: int = 7,
+) -> None:
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(days=max(1, int(ttl_days)))
+    existing = get_exact_semantic_cache_record(session, objective_hash)
+    if existing is not None:
+        existing.objective_embedding = objective_embedding
+        existing.result_summary = result_summary
+        existing.full_result_json = full_result_json
+        existing.expires_at = expires_at
+        session.commit()
+        return
+
+    row = SemanticCache(
+        objective_hash=objective_hash,
+        objective_embedding=objective_embedding,
+        result_summary=result_summary,
+        full_result_json=full_result_json,
+        created_at=now,
+        expires_at=expires_at,
+    )
+    session.add(row)
+    session.commit()
+
+
+def delete_expired_semantic_cache(session: Session) -> int:
+    now = datetime.now(timezone.utc)
+    result = session.execute(
+        delete(SemanticCache).where(SemanticCache.expires_at < now)
+    )
+    session.commit()
+    return int(result.rowcount or 0)

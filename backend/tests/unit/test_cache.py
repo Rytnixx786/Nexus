@@ -8,7 +8,9 @@ from app.core.cache import (
     clear_cache,
     get_cache_stats,
     get_cached_response,
+    get_cached_run_result,
     save_response_to_cache,
+    save_run_result_to_cache,
 )
 
 
@@ -192,3 +194,54 @@ def test_clear_cache_removes_all_entries():
     # Verify entries are gone
     assert get_cached_response("Query 1", "Context") is None
     assert get_cached_response("Query 2", "Context") is None
+
+
+def test_run_cache_lookup_delegates_to_semantic_cache(monkeypatch):
+    """Run-level cache lookup should delegate to semantic cache class."""
+
+    class _FakeSemanticCache:
+        def __init__(self):
+            self.called = False
+
+        def get_cached_result(self, session, objective, high_impact=False):
+            self.called = True
+            return {"status": "completed", "output": "cached", "cached": True}
+
+    fake = _FakeSemanticCache()
+    monkeypatch.setattr("app.core.cache._get_semantic_cache", lambda: fake)
+
+    result = get_cached_run_result(session=None, objective="objective", high_impact=True)
+    assert result is not None
+    assert result["cached"] is True
+    assert fake.called is True
+
+
+def test_run_cache_store_delegates_to_semantic_cache(monkeypatch):
+    """Run-level cache stores should delegate with ttl days."""
+
+    calls: list[dict[str, object]] = []
+
+    class _FakeSemanticCache:
+        def store_cached_result(self, session, objective, result, ttl_days=7, high_impact=False):
+            calls.append(
+                {
+                    "objective": objective,
+                    "result": result,
+                    "ttl_days": ttl_days,
+                    "high_impact": high_impact,
+                }
+            )
+
+    monkeypatch.setattr("app.core.cache._get_semantic_cache", lambda: _FakeSemanticCache())
+
+    save_run_result_to_cache(
+        session=None,
+        objective="objective",
+        result={"status": "completed", "output": "cached"},
+        ttl_days=9,
+        high_impact=True,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["ttl_days"] == 9
+    assert calls[0]["high_impact"] is True

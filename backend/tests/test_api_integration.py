@@ -236,10 +236,15 @@ def test_get_run_returns_correct_status(client, auth_headers, monkeypatch):
 def test_get_runs_returns_total_count(client, auth_headers, monkeypatch):
     _install_fake_start_stream(monkeypatch)
 
-    for idx in range(2):
+    objectives = [
+        "Build enterprise rollout plan for logistics migration",
+        "Evaluate coral reef restoration policy outcomes and funding models",
+    ]
+
+    for objective in objectives:
         response = client.post(
             "/api/runs/stream",
-            json={"objective": f"Build rollout plan {idx}", "high_impact": False, "token_budget": 9000},
+            json={"objective": objective, "high_impact": False, "token_budget": 9000},
             headers=auth_headers,
         )
         assert response.status_code == 200

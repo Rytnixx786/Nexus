@@ -1,14 +1,43 @@
 import json
 import logging
 from typing import Any
+import time
 import redis
 from app.core.settings import settings
 
 logger = logging.getLogger(__name__)
+_last_semantic_cleanup_ts = 0.0
+_semantic_cleanup_interval_seconds = 30 * 60
 
 def get_redis():
     """Create a new Redis connection for the worker."""
     return redis.from_url(settings.redis_url)
+
+
+def cleanup_semantic_cache_job() -> int:
+    """Delete expired semantic cache rows."""
+    from app.db import repository
+    from app.db.session import SessionLocal
+
+    session = SessionLocal()
+    try:
+        deleted = repository.delete_expired_semantic_cache(session)
+        logger.info("Semantic cache cleanup completed", extra={"deleted_rows": deleted})
+        return deleted
+    finally:
+        session.close()
+
+
+def _maybe_run_semantic_cache_cleanup() -> None:
+    global _last_semantic_cleanup_ts
+    now = time.time()
+    if now - _last_semantic_cleanup_ts < _semantic_cleanup_interval_seconds:
+        return
+    _last_semantic_cleanup_ts = now
+    try:
+        cleanup_semantic_cache_job()
+    except Exception:
+        logger.exception("Semantic cache cleanup job failed")
 
 def run_orchestrator_job(state: dict[str, Any]) -> None:
     """Executes the graph run loop in a background RQ worker."""
@@ -22,6 +51,7 @@ def run_orchestrator_job(state: dict[str, Any]) -> None:
         
     redis_conn = get_redis()
     orchestrator = Orchestrator()
+    _maybe_run_semantic_cache_cleanup()
     
     # We must instantiate a local session for the background task
     session = SessionLocal()

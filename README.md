@@ -36,6 +36,8 @@ A user submits a **research objective** and an optional token budget. An 8-node 
 
 Every state transition is checkpointed to PostgreSQL. The SSE stream carries monotone sequence numbers for `Last-Event-ID` replay on reconnect. Runs can be resumed after a human decision or a token budget top-up — no re-execution from scratch.
 
+Run creation also uses a **run-level semantic cache**: objectives are normalized and embedded, then checked against prior successful runs (`cosine >= 0.95`). Cache hits return an immediate `run_finished` SSE payload with `cached=true`, while environments missing embedding/vector support degrade safely to exact-hash matching.
+
 > **Built to demonstrate that the gap between "AI demo" and "AI system" is real, documented, and closeable.**
 
 ---
@@ -81,6 +83,22 @@ The stream endpoint emits structured `timeline`, `awaiting_approval`, and `run_f
 ### 💰 Token Ledger + Daily Quota Windows
 
 Every LLM call charges against a per-run budget. The orchestrator also aggregates usage into a per-subject daily quota (`QUOTA_DAILY_TOKENS`, default 200k). Budget-exhausted runs halt at the next node boundary and resume via `POST /api/runs/{id}/resume-budget/stream` — no silent cost blowouts.
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+### ⚡ Run-Level Semantic Cache
+
+`POST /api/runs/stream` checks a semantic cache before graph execution. If a similar completed objective exists (`cosine >= 0.95`), the API short-circuits execution and streams an immediate `run_finished` event with `cached=true` metadata.
+
+</td>
+<td width="50%">
+
+### 🧯 Graceful Degradation, No Hard Failures
+
+Semantic cache lookups use sentence-transformers embeddings when available. If embedding load, vector support, or pgvector setup is unavailable, the system falls back to exact-match hash caching so reliability is preserved under degraded infrastructure.
 
 </td>
 </tr>
@@ -145,7 +163,9 @@ Each node update is persisted as a `RunCheckpoint` before the stream continues. 
 | Concurrent p95 latency | **7ms** (`/api/runs/stream`) | 252 requests, 10 users |
 | Idempotency | **41 / 42 same run_id** | Dual-submit with identical objective + key |
 | Refusal accuracy | **91%** | Promptfoo `refusalCorrectness`; 18 adversarial cases (2026-04-15) |
-| Cache hit latency | **~2ms** | Normalized query cache in-memory |
+| Semantic cache hit latency | **~2ms** | Run-level stream short-circuit for similar objectives |
+| Semantic similarity threshold | **0.95** | Precision-first cache reuse policy |
+| Semantic cache fallback mode | **Exact-hash** | Active when embedding/vector stack is unavailable |
 | Node execution latency | **~200–800ms** | Provider-dependent; Ollama cold start dominates first call |
 | SLO target | **p95 ≤ 1200ms** | Excluding model runtime; see `docs/SLO_AND_ALERTING.md` |
 
@@ -164,6 +184,7 @@ Each node update is persisted as a `RunCheckpoint` before the stream continues. 
 | Web search | **Tavily API** | Structured results with URL + content; degrades to placeholder when absent |
 | Keyword retrieval | **rank-bm25 (BM25Okapi)** | Captures exact lexical matches that vector search misses |
 | Reranking | **cross-encoder/ms-marco-MiniLM-L-6-v2** | Jointly scores query–document pairs; lazy-loaded, fail-open |
+| Semantic caching | **sentence-transformers + pgvector** | Reuses completed runs for semantically similar objectives; exact-hash fallback when unavailable |
 | Tracing | **LangSmith (opt-in)** | Span-level trace of every LLM call and retrieval step |
 | Observability | **OpenTelemetry + Jaeger** | OTEL-compatible trace pipeline; Jaeger UI for local/debug analysis |
 | Eval framework | **Promptfoo + custom JS evaluators** | Adversarial tests in CI; prompt injection, refusal accuracy, grounded pass rate |
@@ -277,7 +298,8 @@ NEXUS_R_Main/
 │   │       ├── auth.py           # JWT + API key dual-mode auth
 │   │       ├── rate_limiter.py   # Redis fail-open fixed-window limiter
 │   │       ├── state.py          # AgentState TypedDict
-│   │       ├── cache.py          # In-memory cache with deterministic keys
+│   │       ├── cache.py          # LLM response cache + run-level semantic cache wiring
+│   │       ├── semantic_cache.py # Embedding similarity cache with exact-hash fallback
 │   │       ├── logging.py        # Structured JSON logging + correlation IDs
 │   │       ├── tracing.py        # LangSmith opt-in span wrappers
 │   │       └── settings.py       # Pydantic settings from environment
@@ -301,6 +323,7 @@ NEXUS_R_Main/
 │   └── promptfoo.yaml
 ├── docs/
 │   ├── adr/                      # 5 Architecture Decision Records
+│   ├── SEMANTIC_CACHE.md
 │   ├── INCIDENT_RUNBOOK.md
 │   ├── RELEASE_CHECKLIST.md
 │   └── SLO_AND_ALERTING.md
@@ -366,6 +389,7 @@ Python matrix: **3.11** (primary) · **3.12** (secondary) · **3.14 canary** (wa
 
 | Document | Purpose |
 |---|---|
+| [SEMANTIC_CACHE.md](docs/SEMANTIC_CACHE.md) | Similarity thresholding, TTL policy, and fallback behavior for run-level cache |
 | [INCIDENT_RUNBOOK.md](docs/INCIDENT_RUNBOOK.md) | On-call response, debugging playbooks, escalation procedures |
 | [RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) | Pre-release validation, migration strategy, rollback plan |
 | [SLO_AND_ALERTING.md](docs/SLO_AND_ALERTING.md) | Service Level Objectives, alert definitions, error budgets |

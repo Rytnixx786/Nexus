@@ -26,6 +26,7 @@ from app.core.models import (
     TimelineEvent,
 )
 from app.core.orchestrator import Orchestrator, sse_pack
+from app.core.cache import get_cached_run_result, save_run_result_to_cache
 from app.core.settings import settings
 from app.db import repository
 from app.db.session import get_session
@@ -338,6 +339,44 @@ def create_run_stream(
     quota = repository.get_or_create_daily_quota(session, auth.subject)
     if settings.token_ledger_v2 and quota.tokens_used >= settings.quota_daily_tokens:
         raise HTTPException(status_code=402, detail="Daily token quota exceeded")
+
+    cached_result = get_cached_run_result(
+        session=session,
+        objective=payload.objective,
+        high_impact=payload.high_impact,
+    )
+    if cached_result is not None:
+        logger.info(
+            "Semantic cache hit for run stream",
+            extra={
+                "cache_hit": True,
+                "objective_length": len(payload.objective),
+                "high_impact": payload.high_impact,
+                "correlation_id": current_request_id(),
+            },
+        )
+
+        def cached_gen():
+            cached_payload = dict(cached_result)
+            cached_payload["cached"] = True
+            yield sse_pack({"event": "run_finished", "data": cached_payload})
+
+        return StreamingResponse(
+            cached_gen(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    logger.info(
+        "Semantic cache miss for run stream",
+        extra={
+            "cache_hit": False,
+            "objective_length": len(payload.objective),
+            "high_impact": payload.high_impact,
+            "correlation_id": current_request_id(),
+        },
+    )
+
     if settings.sse_resume_v2 and idempotency_key:
         dedupe_hash = sha256(f"start:{auth.subject}:{idempotency_key}:{payload.objective}:{payload.token_budget}".encode()).hexdigest()
         cached = repository.get_idempotency_record(session, "start", dedupe_hash)
@@ -357,6 +396,16 @@ def create_run_stream(
         except TypeError:
             stream_iter = orchestrator.start_stream(session, payload)
         for event in stream_iter:
+            if event.get("event") == "run_finished":
+                event_data = dict(event.get("data", {}))
+                if str(event_data.get("status", "")) == "completed":
+                    save_run_result_to_cache(
+                        session=session,
+                        objective=payload.objective,
+                        result=event_data,
+                        ttl_days=7,
+                        high_impact=payload.high_impact,
+                    )
             if event.get("event") == "run_started":
                 event_data = event.get("data", {})
                 if settings.sse_resume_v2 and idempotency_key:

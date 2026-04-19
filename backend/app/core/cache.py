@@ -12,6 +12,8 @@ import logging
 import time
 from typing import Any
 
+from sqlalchemy.orm import Session
+
 logger = logging.getLogger(__name__)
 
 # Configuration
@@ -21,6 +23,16 @@ CACHE_ENTRY_TTL_SECONDS = 3600  # 1 hour TTL for each entry
 
 # Module-level in-memory cache: {cache_key: (response, timestamp)}
 _response_cache: dict[str, tuple[str, float]] = {}
+_semantic_cache_instance = None
+
+
+def _get_semantic_cache():
+    global _semantic_cache_instance
+    if _semantic_cache_instance is None:
+        from app.core.semantic_cache import SemanticCache
+
+        _semantic_cache_instance = SemanticCache()
+    return _semantic_cache_instance
 
 
 def _cleanup_expired_and_oversized() -> None:
@@ -143,3 +155,29 @@ def get_cache_stats() -> dict[str, Any]:
         "max_size_mb": CACHE_MAX_SIZE_MB,
         "ttl_seconds": CACHE_ENTRY_TTL_SECONDS,
     }
+
+
+def get_cached_run_result(session: Session, objective: str, high_impact: bool = False) -> dict[str, Any] | None:
+    """Get cached run result for /api/runs/stream semantic lookup."""
+    return _get_semantic_cache().get_cached_result(
+        session=session,
+        objective=objective,
+        high_impact=high_impact,
+    )
+
+
+def save_run_result_to_cache(
+    session: Session,
+    objective: str,
+    result: dict[str, Any],
+    ttl_days: int = 7,
+    high_impact: bool = False,
+) -> None:
+    """Store completed run output in semantic cache for stream-level reuse."""
+    _get_semantic_cache().store_cached_result(
+        session=session,
+        objective=objective,
+        result=result,
+        ttl_days=ttl_days,
+        high_impact=high_impact,
+    )

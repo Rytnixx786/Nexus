@@ -21,3 +21,5 @@ python-magic-bin==0.4.14; platform_system == "Windows"
 rank-bm25==0.2.2
 rq>=1.16.1
 locust>=2.15.0
+sentence-transformers>=3.2.1
+pgvector>=0.3.6

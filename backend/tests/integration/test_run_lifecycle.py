@@ -89,3 +89,36 @@ def test_approval_resume_completes_run(client, monkeypatch):
     timeline = client.get(f"/api/runs/{run_id}/timeline")
     assert timeline.status_code == 200
     assert len(timeline.json()["events"]) > 0
+
+
+def test_stream_returns_immediate_cached_run_finished(client, monkeypatch):
+    import app.api.routes as routes
+
+    monkeypatch.setattr(
+        routes,
+        "get_cached_run_result",
+        lambda session, objective, high_impact=False: {
+            "run_id": "cached-run-1",
+            "status": "completed",
+            "current_node": "finalize",
+            "output": "cached response",
+            "cached": True,
+        },
+    )
+
+    def _should_not_run(*args, **kwargs):
+        raise AssertionError("orchestrator.start_stream should not be called on cache hit")
+
+    monkeypatch.setattr(routes.orchestrator, "start_stream", _should_not_run)
+
+    response = client.post(
+        "/api/runs/stream",
+        json={"objective": "Duplicate objective", "high_impact": False, "token_budget": 9000},
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    assert len(events) == 1
+    assert events[0]["event"] == "run_finished"
+    assert events[0]["data"]["cached"] is True
+    assert events[0]["data"]["output"] == "cached response"
